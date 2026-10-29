@@ -14,8 +14,6 @@ private Spring3 moveSpring;
 void Start()
 {
     moveSpring = Spring3.At(transform.position)
-        .SetFrequency(3f, 0.6f)
-        .SetRestThreshold(0.01f)
         .SetOnUpdate(p => transform.position = p)
         .SetOnComplete(() => Debug.Log("arrived"));
 }
