@@ -26,7 +26,7 @@ void OnHover(bool hovering)
 ```
 `Spring` is a readonly struct handle, so always assign the result of `Cancel()` / `New()`. A handle goes dead the moment the spring settles on its target or is cancelled; `spring.IsActive` tells you which. Setting a callback on a dead handle logs a warning and does nothing.
 
-`Spring2`, `Spring3` and `Spring4` are the same handle over a vector. They are one pooled spring each, not a bundle of float springs: one slot, one `onUpdate` per frame with the whole vector, one `onComplete` when the motion settles. Stiffness, damping and the rest threshold apply to the vector as a whole, so a diagonal move feels the same as an axis aligned one.
+`Spring2`, `Spring3` and `Spring4` are springs for `Vector2`, `Vector3` and `Vector4`, with the same API.
 ```c#
 private Spring3 moveSpring;
 
