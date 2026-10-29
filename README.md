@@ -1,0 +1,83 @@
+# L3 Spring
+
+A bare bones spring animation system for Unity. Sibling of [L3 Tween](https://github.com/Less3Design/L3-tween) with the same handle, pool and callback layout.
+
+## Install
+Add to your Unity project as a [git package using the package manager](https://docs.unity3d.com/6000.3/Documentation/Manual/upm-ui-giturl.html).
+
+## Usage
+```c#
+private Spring hoverSpring;
+
+void OnHover(bool hovering)
+{
+    float target = hovering ? 1.2f : 1f;
+    if (hoverSpring.IsActive)
+    {
+        // keep the momentum, just chase the new target
+        hoverSpring.SetTarget(target);
+        return;
+    }
+    hoverSpring = Spring.Create(transform.localScale.x, target)
+        .SetFrequency(4f, 0.5f)// 4 Hz with a bit of bounce
+        .SetOnUpdate(s => transform.localScale = Vector3.one * s)
+        .SetOnComplete(() => Debug.Log("settled"));
+}
+```
+`Spring` is a readonly struct handle, so always assign the result of `Cancel()` / `New()`. A handle goes dead the moment the spring settles on its target or is cancelled; `spring.IsActive` tells you which. Setting a callback on a dead handle logs a warning and does nothing.
+
+A spring differs from a tween in two ways:
+- There is no duration. The spring runs until its value and velocity are both within `restThreshold` of the target, then snaps exactly onto the target, calls `onUpdate` one last time, and calls `onComplete`.
+- A running spring can be retargeted with `SetTarget` and pushed with `SetVelocity` / `AddVelocity` without being restarted. That is the whole point of springs: interruptions look natural because the motion carries its momentum into the new goal.
+
+Here is all the state we maintain:
+```csharp
+public class SpringObject
+{
+    public ushort id;
+    public ushort version;
+    public bool active;
+    public int activeIndex;
+
+    public float value;
+    public float velocity;
+    public float target;
+    public float stiffness;
+    public float damping;
+    public float restThreshold;
+    public SpringUpdateType deltaTimeType;
+
+    public Action<float> onUpdate;
+    public Action onComplete;
+    public Action onCancel;
+}
+```
+
+## How a spring works
+Every step the spring applies one rule: acceleration is proportional to how far it is from the target, pointing back at the target, minus a drag proportional to its velocity.
+
+```
+acceleration = -stiffness * (value - target) - damping * velocity
+velocity    += acceleration * dt
+value       += velocity * dt
+```
+
+- **stiffness** (k) is how hard it pulls. Higher is faster and snappier.
+- **damping** (c) is how hard it resists motion. The important number is the ratio `c / (2 * sqrt(k))`:
+  - below 1, **underdamped**: it overshoots and bounces before settling.
+  - exactly 1, **critically damped**: the fastest approach with no overshoot. This is the default (170 / 26).
+  - above 1, **overdamped**: no overshoot but it crawls in.
+
+`SetFrequency(hz, ratio)` sets both from the two numbers people actually think in: how many bounces per second the undamped spring would make, and the damping ratio above.
+
+The integrator is semi implicit Euler in sub steps of at most 1/120 s, and a frame longer than 16 sub steps (133 ms) is clamped, so a hitch against a very stiff spring slows the motion instead of blowing it up. There is no closed form or job system because the goal is to keep the code as simple as possible.
+
+## Rest threshold
+A spring never mathematically reaches its target, so completion is a threshold check. The default of 0.001 suits 0..1 values. If you spring pixels or world units, raise it with `SetRestThreshold` so the spring completes as soon as the motion is invisible.
+
+## Pool size
+The pool starts at 256 springs and doubles whenever it runs out, up to a max of 4096 (hard limit 65536, ids are ushorts). Configure it from **Project Settings > Less3 > Spring**, which creates `Assets/Resources/L3 Spring Settings.asset` in your project. Or from code, before the first spring:
+```csharp
+[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+static void ConfigureSprings() => SpringManager.Configure(initialPoolSize: 512, maxPoolSize: 8192);
+```

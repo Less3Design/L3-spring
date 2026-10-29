@@ -1,0 +1,13 @@
+{
+  "name": "less3.spring",
+  "displayName": "L3 Spring",
+  "version": "0.1.0",
+  "unity": "6000.0",
+  "description": "A bare bones spring animation system for Unity.",
+  "author": "Less 3",
+  "keywords": [
+    "Spring",
+    "Animation"
+  ],
+  "category": "Unity"
+}
