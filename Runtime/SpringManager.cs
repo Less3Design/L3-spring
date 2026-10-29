@@ -245,12 +245,16 @@ namespace Less3.Springs
             freeCount++;
         }
 
-        public Spring AllocateSpring(float from, float target)
+        /// <summary>
+        /// Take a slot from the pool and start it. Returns null (after logging) when the pool is full.
+        /// The handle structs wrap this; <c>dimensions</c> picks which onUpdate the object will invoke.
+        /// </summary>
+        public SpringObject Allocate(Vector4 from, Vector4 target, byte dimensions)
         {
             if (freeCount == 0 && !TryGrow())
             {
                 Debug.LogError($"{nameof(SpringManager)}: No free spring slots available! Pool is at its max of {maxPoolSize}.");
-                return default;
+                return null;
             }
 
             ushort id = freeIds[freeHead];
@@ -258,10 +262,10 @@ namespace Less3.Springs
             freeCount--;
 
             SpringObject obj = springPool[id];
-            obj.Allocate(from, target);
+            obj.Allocate(from, target, dimensions);
             obj.activeIndex = activeCount;
             activeIds[activeCount++] = id;
-            return new Spring(id, obj.version);
+            return obj;
         }
 
         /// <summary>
@@ -292,9 +296,9 @@ namespace Less3.Springs
             PushFree(obj.id);
         }
 
-        public void CancelSpring(Spring spring)
+        public void CancelSpring(ushort id, ushort version)
         {
-            if (TryGetSpringObject(spring, out SpringObject obj))
+            if (TryGetSpringObject(id, version, out SpringObject obj))
             {
                 System.Action onCancel = obj.onCancel;
                 Release(obj);
@@ -312,16 +316,27 @@ namespace Less3.Springs
         /// <summary>
         /// Resolve a handle to its live SpringObject. Fails for default handles, stale handles and finished springs.
         /// </summary>
-        public bool TryGetSpringObject(Spring spring, out SpringObject obj)
+        public bool TryGetSpringObject(ushort id, ushort version, out SpringObject obj)
         {
-            if (spring.version != 0 && spring.id < springPool.Length)
+            if (version != 0 && id < springPool.Length)
             {
-                obj = springPool[spring.id];
-                if (obj.active && obj.version == spring.version)
+                obj = springPool[id];
+                if (obj.active && obj.version == version)
                 {
                     return true;
                 }
             }
+            obj = null;
+            return false;
+        }
+
+        /// <summary>
+        /// Same as above but also checks the object was allocated with the expected dimensions, so a Spring3 handle
+        /// built from a Spring's id cannot drive the wrong callback.
+        /// </summary>
+        public bool TryGetSpringObject(ushort id, ushort version, byte dimensions, out SpringObject obj)
+        {
+            if (TryGetSpringObject(id, version, out obj) && obj.dimensions == dimensions) return true;
             obj = null;
             return false;
         }

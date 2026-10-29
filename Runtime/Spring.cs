@@ -3,11 +3,14 @@ using UnityEngine;
 namespace Less3.Springs
 {
     /// <summary>
-    /// A soft reference to a spring. The handle becomes invalid as soon as the spring settles on its target or is cancelled.
+    /// A soft reference to a float spring. The handle becomes invalid as soon as the spring settles on its target or is cancelled.
     /// Unlike a tween, a running spring can be retargeted at any time with <see cref="SetTarget"/> and keeps its momentum.
+    /// See <see cref="Spring2"/>, <see cref="Spring3"/> and <see cref="Spring4"/> for vector springs with the same API.
     /// </summary>
     public readonly struct Spring
     {
+        private const byte DIMENSIONS = 1;
+
         public readonly ushort id;
         public readonly ushort version;// 0 = invalid
 
@@ -22,14 +25,14 @@ namespace Less3.Springs
         /// <summary>
         /// True while the spring this handle points to is still moving.
         /// </summary>
-        public bool IsActive => TryGet(out _);
+        public bool IsActive => SpringHandle.TryGet(id, version, DIMENSIONS, out _);
 
         /// <summary>Current value, or 0 when the handle is dead.</summary>
-        public float Value => TryGet(out SpringObject obj) ? obj.value : 0f;
+        public float Value => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? obj.value.x : 0f;
         /// <summary>Current velocity in units per second, or 0 when the handle is dead.</summary>
-        public float Velocity => TryGet(out SpringObject obj) ? obj.velocity : 0f;
+        public float Velocity => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? obj.velocity.x : 0f;
         /// <summary>Current target, or 0 when the handle is dead.</summary>
-        public float Target => TryGet(out SpringObject obj) ? obj.target : 0f;
+        public float Target => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? obj.target.x : 0f;
 
         /// <summary>
         /// Start a new spring from 0 toward the target. The returned handle replaces this one, so assign it: <c>s = s.Cancel().New(1f)</c>
@@ -44,7 +47,7 @@ namespace Less3.Springs
         /// </summary>
         public Spring New(float from, float target)
         {
-            return SpringManager.Instance.AllocateSpring(from, target);
+            return Create(from, target);
         }
 
         /// <summary>
@@ -54,7 +57,7 @@ namespace Less3.Springs
         {
             if (version != 0 && SpringManager.Instance != null)
             {
-                SpringManager.Instance.CancelSpring(this);
+                SpringManager.Instance.CancelSpring(id, version);
             }
             return default;
         }
@@ -67,28 +70,28 @@ namespace Less3.Springs
         /// </summary>
         public Spring SetTarget(float target)
         {
-            if (TryGet(out SpringObject obj, nameof(SetTarget))) obj.target = target;
+            if (Get(nameof(SetTarget), out SpringObject obj)) obj.target.x = target;
             return this;
         }
 
         /// <summary>Teleport the current value without touching velocity.</summary>
         public Spring SetValue(float value)
         {
-            if (TryGet(out SpringObject obj, nameof(SetValue))) obj.value = value;
+            if (Get(nameof(SetValue), out SpringObject obj)) obj.value.x = value;
             return this;
         }
 
         /// <summary>Set the velocity in units per second. Use this to throw the spring, e.g. flicks and impacts.</summary>
         public Spring SetVelocity(float velocity)
         {
-            if (TryGet(out SpringObject obj, nameof(SetVelocity))) obj.velocity = velocity;
+            if (Get(nameof(SetVelocity), out SpringObject obj)) obj.velocity.x = velocity;
             return this;
         }
 
         /// <summary>Add to the velocity. Repeated impulses stack.</summary>
         public Spring AddVelocity(float velocity)
         {
-            if (TryGet(out SpringObject obj, nameof(AddVelocity))) obj.velocity += velocity;
+            if (Get(nameof(AddVelocity), out SpringObject obj)) obj.velocity.x += velocity;
             return this;
         }
 
@@ -97,7 +100,7 @@ namespace Less3.Springs
         /// </summary>
         public Spring SetStiffness(float stiffness)
         {
-            if (TryGet(out SpringObject obj, nameof(SetStiffness))) obj.stiffness = stiffness;
+            if (Get(nameof(SetStiffness), out SpringObject obj)) obj.stiffness = stiffness;
             return this;
         }
 
@@ -108,7 +111,7 @@ namespace Less3.Springs
         /// </summary>
         public Spring SetDamping(float damping)
         {
-            if (TryGet(out SpringObject obj, nameof(SetDamping))) obj.damping = damping;
+            if (Get(nameof(SetDamping), out SpringObject obj)) obj.damping = damping;
             return this;
         }
 
@@ -118,12 +121,7 @@ namespace Less3.Springs
         /// </summary>
         public Spring SetFrequency(float frequencyHz, float dampingRatio)
         {
-            if (TryGet(out SpringObject obj, nameof(SetFrequency)))
-            {
-                float omega = 2f * Mathf.PI * frequencyHz;
-                obj.stiffness = omega * omega;
-                obj.damping = 2f * dampingRatio * omega;
-            }
+            if (Get(nameof(SetFrequency), out SpringObject obj)) SpringHandle.SetFrequency(obj, frequencyHz, dampingRatio);
             return this;
         }
 
@@ -133,52 +131,35 @@ namespace Less3.Springs
         /// </summary>
         public Spring SetRestThreshold(float threshold)
         {
-            if (TryGet(out SpringObject obj, nameof(SetRestThreshold))) obj.restThreshold = threshold;
+            if (Get(nameof(SetRestThreshold), out SpringObject obj)) obj.restThreshold = threshold;
             return this;
         }
 
         public Spring SetUpdateType(SpringUpdateType updateType)
         {
-            if (TryGet(out SpringObject obj, nameof(SetUpdateType))) obj.deltaTimeType = updateType;
+            if (Get(nameof(SetUpdateType), out SpringObject obj)) obj.deltaTimeType = updateType;
             return this;
         }
 
         public Spring SetOnUpdate(System.Action<float> onUpdate)
         {
-            if (TryGet(out SpringObject obj, nameof(SetOnUpdate))) obj.onUpdate = onUpdate;
+            if (Get(nameof(SetOnUpdate), out SpringObject obj)) obj.onUpdate1 = onUpdate;
             return this;
         }
 
         public Spring SetOnComplete(System.Action onComplete)
         {
-            if (TryGet(out SpringObject obj, nameof(SetOnComplete))) obj.onComplete = onComplete;
+            if (Get(nameof(SetOnComplete), out SpringObject obj)) obj.onComplete = onComplete;
             return this;
         }
 
         public Spring SetOnCancel(System.Action onCancel)
         {
-            if (TryGet(out SpringObject obj, nameof(SetOnCancel))) obj.onCancel = onCancel;
+            if (Get(nameof(SetOnCancel), out SpringObject obj)) obj.onCancel = onCancel;
             return this;
         }
 
-        // * helpers
-
-        private bool TryGet(out SpringObject obj)
-        {
-            if (version != 0 && SpringManager.Instance != null)
-            {
-                return SpringManager.Instance.TryGetSpringObject(this, out obj);
-            }
-            obj = null;
-            return false;
-        }
-
-        private bool TryGet(out SpringObject obj, string operation)
-        {
-            if (TryGet(out obj)) return true;
-            Debug.LogWarning($"Spring: {operation} failed to find SpringObject for id {id} version {version}");
-            return false;
-        }
+        private bool Get(string operation, out SpringObject obj) => SpringHandle.TryGet(id, version, DIMENSIONS, operation, out obj);
 
         //* static bits
 
@@ -195,7 +176,8 @@ namespace Less3.Springs
         /// </summary>
         public static Spring Create(float from, float target)
         {
-            return SpringManager.Instance.AllocateSpring(from, target);
+            SpringObject obj = SpringManager.Instance.Allocate(new Vector4(from, 0f, 0f, 0f), new Vector4(target, 0f, 0f, 0f), DIMENSIONS);
+            return obj == null ? default : new Spring(obj.id, obj.version);
         }
     }
 }

@@ -4,8 +4,10 @@ using System;
 namespace Less3.Springs
 {
     /// <summary>
-    /// The pooled state behind a Spring handle. A damped harmonic oscillator with unit mass:
+    /// The pooled state behind every spring handle. A damped harmonic oscillator with unit mass:
     /// every step the spring is pulled toward its target by stiffness and slowed by damping.
+    /// State is a Vector4 so one object serves Spring, Spring2, Spring3 and Spring4; unused components stay at zero.
+    /// Stiffness, damping and the rest threshold are shared across components, so a diagonal move feels the same as an axis aligned one.
     /// </summary>
     public class SpringObject
     {
@@ -14,15 +16,20 @@ namespace Less3.Springs
         public bool active;
         public int activeIndex = -1;// position in the manager's active list, -1 when not running
 
-        public float value;
-        public float velocity;
-        public float target;
+        public byte dimensions;// 1..4, decides which onUpdate is invoked
+        public Vector4 value;
+        public Vector4 velocity;
+        public Vector4 target;
         public float stiffness;// how hard the spring pulls toward the target (k)
         public float damping;// how hard it resists motion (c)
         public float restThreshold;// at rest once both |value - target| and |velocity| are under this
         public SpringUpdateType deltaTimeType;
 
-        public Action<float> onUpdate;
+        // only the one matching dimensions is ever set
+        public Action<float> onUpdate1;
+        public Action<Vector2> onUpdate2;
+        public Action<Vector3> onUpdate3;
+        public Action<Vector4> onUpdate4;
         public Action onComplete;
         public Action onCancel;
 
@@ -42,21 +49,20 @@ namespace Less3.Springs
             this.version = 1;
         }
 
-        public void Allocate(float from, float target)
+        public void Allocate(Vector4 from, Vector4 target, byte dimensions)
         {
             active = true;
+            this.dimensions = dimensions;
             this.value = from;
             this.target = target;
-            this.velocity = 0f;
+            this.velocity = Vector4.zero;
 
             // default values
             this.stiffness = DEFAULT_STIFFNESS;
             this.damping = DEFAULT_DAMPING;
             this.restThreshold = DEFAULT_REST_THRESHOLD;
             this.deltaTimeType = SpringUpdateType.DeltaTime;
-            onUpdate = null;
-            onComplete = null;
-            onCancel = null;
+            ClearCallbacks();
         }
 
         /// <summary>
@@ -74,22 +80,29 @@ namespace Less3.Springs
                 for (int i = 0; i < steps; i++)
                 {
                     // semi implicit Euler: update velocity first, then move with the new velocity
-                    float acceleration = -stiffness * (value - target) - damping * velocity;
+                    Vector4 acceleration = -stiffness * (value - target) - damping * velocity;
                     velocity += acceleration * h;
                     value += velocity * h;
                 }
             }
 
-            bool atRest = Mathf.Abs(value - target) < restThreshold && Mathf.Abs(velocity) < restThreshold;
+            float thresholdSq = restThreshold * restThreshold;
+            bool atRest = (value - target).sqrMagnitude < thresholdSq && velocity.sqrMagnitude < thresholdSq;
             if (atRest)
             {
                 value = target;
-                velocity = 0f;
+                velocity = Vector4.zero;
             }
 
             try
             {
-                onUpdate?.Invoke(value);
+                switch (dimensions)
+                {
+                    case 1: onUpdate1?.Invoke(value.x); break;
+                    case 2: onUpdate2?.Invoke(value); break;
+                    case 3: onUpdate3?.Invoke(value); break;
+                    default: onUpdate4?.Invoke(value); break;
+                }
             }
             catch (Exception e)
             {
@@ -106,7 +119,15 @@ namespace Less3.Springs
             active = false;
             version++;
             if (version == 0) version = 1; // 0 is reserved for invalid handles
-            onUpdate = null;
+            ClearCallbacks();
+        }
+
+        private void ClearCallbacks()
+        {
+            onUpdate1 = null;
+            onUpdate2 = null;
+            onUpdate3 = null;
+            onUpdate4 = null;
             onComplete = null;
             onCancel = null;
         }
@@ -117,5 +138,36 @@ namespace Less3.Springs
         DeltaTime,
         FixedDeltaTime,
         UnscaledDeltaTime
+    }
+
+    /// <summary>
+    /// The lookup every handle struct goes through. Resolves (id, version) to a live object of the expected
+    /// dimension and logs a warning when the handle is dead, so the setters on each handle stay one liners.
+    /// </summary>
+    internal static class SpringHandle
+    {
+        public static bool TryGet(ushort id, ushort version, byte dimensions, out SpringObject obj)
+        {
+            if (version != 0 && SpringManager.Instance != null)
+            {
+                return SpringManager.Instance.TryGetSpringObject(id, version, dimensions, out obj);
+            }
+            obj = null;
+            return false;
+        }
+
+        public static bool TryGet(ushort id, ushort version, byte dimensions, string operation, out SpringObject obj)
+        {
+            if (TryGet(id, version, dimensions, out obj)) return true;
+            Debug.LogWarning($"Spring{(dimensions > 1 ? dimensions.ToString() : "")}: {operation} failed to find SpringObject for id {id} version {version}");
+            return false;
+        }
+
+        public static void SetFrequency(SpringObject obj, float frequencyHz, float dampingRatio)
+        {
+            float omega = 2f * Mathf.PI * frequencyHz;
+            obj.stiffness = omega * omega;
+            obj.damping = 2f * dampingRatio * omega;
+        }
     }
 }

@@ -26,6 +26,22 @@ void OnHover(bool hovering)
 ```
 `Spring` is a readonly struct handle, so always assign the result of `Cancel()` / `New()`. A handle goes dead the moment the spring settles on its target or is cancelled; `spring.IsActive` tells you which. Setting a callback on a dead handle logs a warning and does nothing.
 
+`Spring2`, `Spring3` and `Spring4` are the same handle over a vector. They are one pooled spring each, not a bundle of float springs: one slot, one `onUpdate` per frame with the whole vector, one `onComplete` when the motion settles. Stiffness, damping and the rest threshold apply to the vector as a whole, so a diagonal move feels the same as an axis aligned one.
+```c#
+private Spring3 moveSpring;
+
+void MoveTo(Vector3 point)
+{
+    moveSpring = moveSpring.IsActive
+        ? moveSpring.SetTarget(point)// still moving: just chase the new point, keep the momentum
+        : Spring3.Create(transform.position, point)
+            .SetFrequency(3f, 0.6f)
+            .SetRestThreshold(0.01f)
+            .SetOnUpdate(p => transform.position = p)
+            .SetOnComplete(() => Debug.Log("arrived"));
+}
+```
+
 A spring differs from a tween in two ways:
 - There is no duration. The spring runs until its value and velocity are both within `restThreshold` of the target, then snaps exactly onto the target, calls `onUpdate` one last time, and calls `onComplete`.
 - A running spring can be retargeted with `SetTarget` and pushed with `SetVelocity` / `AddVelocity` without being restarted. That is the whole point of springs: interruptions look natural because the motion carries its momentum into the new goal.
@@ -39,19 +55,24 @@ public class SpringObject
     public bool active;
     public int activeIndex;
 
-    public float value;
-    public float velocity;
-    public float target;
+    public byte dimensions;// 1..4, picks the onUpdate
+    public Vector4 value;
+    public Vector4 velocity;
+    public Vector4 target;
     public float stiffness;
     public float damping;
     public float restThreshold;
     public SpringUpdateType deltaTimeType;
 
-    public Action<float> onUpdate;
+    public Action<float> onUpdate1;
+    public Action<Vector2> onUpdate2;
+    public Action<Vector3> onUpdate3;
+    public Action<Vector4> onUpdate4;
     public Action onComplete;
     public Action onCancel;
 }
 ```
+Every spring is backed by a Vector4; a float spring just leaves three components at zero. The integrator does not branch on the dimension, only the callback dispatch does.
 
 ## How a spring works
 Every step the spring applies one rule: acceleration is proportional to how far it is from the target, pointing back at the target, minus a drag proportional to its velocity.
@@ -73,7 +94,7 @@ value       += velocity * dt
 The integrator is semi implicit Euler in sub steps of at most 1/120 s, and a frame longer than 16 sub steps (133 ms) is clamped, so a hitch against a very stiff spring slows the motion instead of blowing it up. There is no closed form or job system because the goal is to keep the code as simple as possible.
 
 ## Rest threshold
-A spring never mathematically reaches its target, so completion is a threshold check. The default of 0.001 suits 0..1 values. If you spring pixels or world units, raise it with `SetRestThreshold` so the spring completes as soon as the motion is invisible.
+A spring never mathematically reaches its target, so completion is a threshold check on the distance to the target and the speed (the vector magnitudes, for vector springs). The default of 0.001 suits 0..1 values. If you spring pixels or world units, raise it with `SetRestThreshold` so the spring completes as soon as the motion is invisible.
 
 ## Pool size
 The pool starts at 256 springs and doubles whenever it runs out, up to a max of 4096 (hard limit 65536, ids are ushorts). Configure it from **Project Settings > Less3 > Spring**, which creates `Assets/Resources/L3 Spring Settings.asset` in your project. Or from code, before the first spring:
