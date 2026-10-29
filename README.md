@@ -6,41 +6,29 @@ A bare bones spring animation system for Unity. Sibling of [L3 Tween](https://gi
 Add to your Unity project as a [git package using the package manager](https://docs.unity3d.com/6000.3/Documentation/Manual/upm-ui-giturl.html).
 
 ## Usage
-```c#
-private Spring hoverSpring;
-
-void OnHover(bool hovering)
-{
-    float target = hovering ? 1.2f : 1f;
-    if (hoverSpring.IsActive)
-    {
-        // keep the momentum, just chase the new target
-        hoverSpring.SetTarget(target);
-        return;
-    }
-    hoverSpring = Spring.Create(transform.localScale.x, target)
-        .SetFrequency(4f, 0.5f)// 4 Hz with a bit of bounce
-        .SetOnUpdate(s => transform.localScale = Vector3.one * s)
-        .SetOnComplete(() => Debug.Log("settled"));
-}
-```
-`Spring` is a readonly struct handle, so always assign the result of `Cancel()` / `New()`. A handle goes dead the moment the spring settles on its target or is cancelled; `spring.IsActive` tells you which. Setting a callback on a dead handle logs a warning and does nothing.
-
-`Spring2`, `Spring3` and `Spring4` are springs for `Vector2`, `Vector3` and `Vector4`, with the same API.
+A spring handle carries its own settings, so you configure it once and then just move the target:
 ```c#
 private Spring3 moveSpring;
 
-void MoveTo(Vector3 point)
+void Start()
 {
-    moveSpring = moveSpring.IsActive
-        ? moveSpring.SetTarget(point)// still moving: just chase the new point, keep the momentum
-        : Spring3.Create(transform.position, point)
-            .SetFrequency(3f, 0.6f)
-            .SetRestThreshold(0.01f)
-            .SetOnUpdate(p => transform.position = p)
-            .SetOnComplete(() => Debug.Log("arrived"));
+    // configured, idle, nothing allocated yet
+    moveSpring = Spring3.At(transform.position)
+        .SetFrequency(3f, 0.6f)// 3 Hz with a bit of bounce
+        .SetRestThreshold(0.01f)
+        .SetOnUpdate(p => transform.position = p)
+        .SetOnComplete(() => Debug.Log("arrived"));
 }
+
+void MoveTo(Vector3 point) => moveSpring = moveSpring.SetTarget(point);
 ```
+`SetTarget` does the right thing either way. If the spring is still moving it keeps its value and velocity and heads for the new point, which is why interruptions look natural. If it has settled (or was cancelled) a fresh spring is allocated from where the last one stopped, with the same settings and callbacks. Nothing is allocated while the spring is idle, so there is nothing to clean up.
+
+`Spring`, `Spring2`, `Spring3` and `Spring4` are springs for `float`, `Vector2`, `Vector3` and `Vector4`, with the same API.
+
+The handles are readonly structs and every call returns the updated handle, so **always assign the result**: `s = s.SetTarget(x)`, `s = s.Cancel()`. If you forget, the spring still runs but your field never learns about it, and the next `SetTarget` starts a second spring instead of retargeting the first.
+
+`spring.IsActive` is true while the spring is moving. `Create(from, target)` is a shortcut for `At(from).SetTarget(target)` when you just want a one shot with default settings.
 
 A spring differs from a tween in two ways:
 - There is no duration. The spring runs until its value and velocity are both within `restThreshold` of the target, then snaps exactly onto the target, calls `onUpdate` one last time, and calls `onComplete`.

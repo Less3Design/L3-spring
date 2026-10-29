@@ -3,22 +3,31 @@ using UnityEngine;
 namespace Less3.Springs
 {
     /// <summary>
-    /// A soft reference to a Vector2 spring: one pooled spring whose value, velocity and target are Vector2s.
-    /// Stiffness, damping and the rest threshold are shared across components, so a diagonal move feels the same as an axis aligned one.
-    /// The handle becomes invalid as soon as the spring settles on its target or is cancelled. A running spring can be
-    /// retargeted at any time with <see cref="SetTarget"/> and keeps its momentum.
+    /// A Vector2 spring handle. The handle carries its tuning, callbacks and a resume point, so it can be configured
+    /// before anything runs and reused after the spring settles: SetTarget on a settled (or cancelled) handle allocates a
+    /// fresh spring from where the last one stopped, with the same settings. Every call returns the updated handle, so
+    /// always assign the result: <c>s = s.SetTarget(x)</c>.
+    /// While a spring is moving the handle is "active"; SetTarget then just moves the goal and the motion keeps its momentum.
     /// </summary>
     public readonly struct Spring2
     {
         private const byte DIMENSIONS = 2;
 
         public readonly ushort id;
-        public readonly ushort version;// 0 = invalid
+        public readonly ushort version;// 0 = nothing allocated
+        private readonly SpringConfig config;
+        private readonly System.Action<Vector2> onUpdate;
+        private readonly Vector2 resume;// where the next spring starts when this handle is not active
 
-        public Spring2(ushort id, ushort version)
+        public Spring2(ushort id, ushort version) : this(id, version, default, null, Vector2.zero) { }
+
+        private Spring2(ushort id, ushort version, SpringConfig config, System.Action<Vector2> onUpdate, Vector2 resume)
         {
             this.id = id;
             this.version = version;
+            this.config = config;
+            this.onUpdate = onUpdate;
+            this.resume = resume;
         }
 
         public int key { get { return (version << 16) | id; } }
@@ -28,15 +37,43 @@ namespace Less3.Springs
         /// </summary>
         public bool IsActive => SpringHandle.TryGet(id, version, DIMENSIONS, out _);
 
-        /// <summary>Current value, or zero when the handle is dead.</summary>
-        public Vector2 Value => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? (Vector2)obj.value : Vector2.zero;
-        /// <summary>Current velocity in units per second, or zero when the handle is dead.</summary>
+        /// <summary>Current value while moving, otherwise the point the next spring will start from.</summary>
+        public Vector2 Value => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? (Vector2)obj.value : resume;
+        /// <summary>Current velocity in units per second, or zero when not moving.</summary>
         public Vector2 Velocity => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? (Vector2)obj.velocity : Vector2.zero;
-        /// <summary>Current target, or zero when the handle is dead.</summary>
-        public Vector2 Target => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? (Vector2)obj.target : Vector2.zero;
+        /// <summary>Current target while moving, otherwise the resume point.</summary>
+        public Vector2 Target => SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj) ? (Vector2)obj.target : resume;
+
+        // * creation
 
         /// <summary>
-        /// Start a new spring from zero toward the target. The returned handle replaces this one, so assign it: <c>s = s.Cancel().New(target)</c>
+        /// A configured but idle handle resting at <c>value</c>. Nothing is allocated until the first SetTarget / SetVelocity.
+        /// This is the one to keep in a field: configure it once, then <c>s = s.SetTarget(x)</c> whenever the goal changes.
+        /// </summary>
+        public static Spring2 At(Vector2 value)
+        {
+            return new Spring2(0, 0, SpringConfig.Default, null, value);
+        }
+
+        /// <summary>
+        /// Start a spring from zero toward the target with default settings.
+        /// </summary>
+        public static Spring2 Create(Vector2 target)
+        {
+            return At(Vector2.zero).SetTarget(target);
+        }
+
+        /// <summary>
+        /// Start a spring at <c>from</c> that settles on <c>target</c> with default settings.
+        /// </summary>
+        public static Spring2 Create(Vector2 from, Vector2 target)
+        {
+            return At(from).SetTarget(target);
+        }
+
+        /// <summary>
+        /// Start a new spring from zero toward the target, keeping this handle's settings and callbacks.
+        /// Does not touch a spring this handle may still be driving; Cancel first if you want that: <c>s = s.Cancel().New(x)</c>
         /// </summary>
         public Spring2 New(Vector2 target)
         {
@@ -44,65 +81,100 @@ namespace Less3.Springs
         }
 
         /// <summary>
-        /// Start a new spring at <c>from</c> that settles on <c>target</c>. The returned handle replaces this one, so assign it: <c>s = s.Cancel().New(from, target)</c>
+        /// Start a new spring at <c>from</c> toward <c>target</c>, keeping this handle's settings and callbacks.
         /// </summary>
         public Spring2 New(Vector2 from, Vector2 target)
         {
-            return Create(from, target);
+            return new Spring2(0, 0, config, onUpdate, from).SetTarget(target);
         }
 
         /// <summary>
-        /// Cancel the spring if it is still running. Returns an invalid handle.
+        /// Stop the spring if it is moving. The returned handle keeps its settings and resumes from the value it was
+        /// cancelled at, so a later SetTarget continues from there.
         /// </summary>
         public Spring2 Cancel()
         {
-            if (version != 0 && SpringManager.Instance != null)
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
             {
+                Vector2 at = (Vector2)obj.value;
                 SpringManager.Instance.CancelSpring(id, version);
+                return new Spring2(0, 0, config, onUpdate, at);
             }
-            return default;
+            return new Spring2(0, 0, config, onUpdate, resume);
         }
 
-        // * Set Functions
+        // * motion
 
         /// <summary>
-        /// Move the target while the spring is running. The spring keeps its current value and velocity, so this is
-        /// the way to chase a moving value (cursor, hover state, scroll position) without restarting the motion.
+        /// Move the goal. While the spring is moving it keeps its value and velocity and simply heads for the new target.
+        /// When it is not moving a new spring is allocated from the resume point with this handle's settings.
         /// </summary>
         public Spring2 SetTarget(Vector2 target)
         {
-            if (Get(nameof(SetTarget), out SpringObject obj)) obj.target = target;
-            return this;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
+            {
+                obj.target = (Vector4)target;
+                return new Spring2(id, version, config, onUpdate, target);
+            }
+            return Start(resume, target, Vector4.zero);
         }
 
-        /// <summary>Teleport the current value without touching velocity.</summary>
+        /// <summary>Teleport the current value without touching velocity. On an idle handle this moves the resume point.</summary>
         public Spring2 SetValue(Vector2 value)
         {
-            if (Get(nameof(SetValue), out SpringObject obj)) obj.value = value;
-            return this;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
+            {
+                obj.value = (Vector4)value;
+                return this;
+            }
+            return new Spring2(id, version, config, onUpdate, value);
         }
 
-        /// <summary>Set the velocity in units per second. Use this to throw the spring, e.g. flicks and impacts.</summary>
+        /// <summary>
+        /// Set the velocity in units per second. Use this to throw the spring, e.g. flicks and impacts.
+        /// On an idle handle this starts a spring at the resume point that flies off and comes back.
+        /// </summary>
         public Spring2 SetVelocity(Vector2 velocity)
         {
-            if (Get(nameof(SetVelocity), out SpringObject obj)) obj.velocity = velocity;
-            return this;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
+            {
+                obj.velocity = (Vector4)velocity;
+                return this;
+            }
+            return Start(resume, resume, (Vector4)velocity);
         }
 
-        /// <summary>Add to the velocity. Repeated impulses stack.</summary>
+        /// <summary>Add to the velocity. Repeated impulses stack. On an idle handle this behaves like SetVelocity.</summary>
         public Spring2 AddVelocity(Vector2 velocity)
         {
-            if (Get(nameof(AddVelocity), out SpringObject obj)) obj.velocity += (Vector4)velocity;
-            return this;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
+            {
+                obj.velocity += (Vector4)velocity;
+                return this;
+            }
+            return Start(resume, resume, (Vector4)velocity);
         }
+
+        private Spring2 Start(Vector2 from, Vector2 target, Vector4 velocity)
+        {
+            SpringObject obj = SpringHandle.Allocate((Vector4)from, (Vector4)target, DIMENSIONS, config);
+            if (obj == null) return this;
+            obj.velocity = velocity;
+            obj.onUpdate2 = onUpdate;
+            return new Spring2(obj.id, obj.version, config.Resolved, onUpdate, target);
+        }
+
+        // * tuning. each writes the handle's config and, if a spring is moving, the live object too.
 
         /// <summary>
         /// How hard the spring pulls toward the target. Higher is faster and snappier. Default 170.
         /// </summary>
         public Spring2 SetStiffness(float stiffness)
         {
-            if (Get(nameof(SetStiffness), out SpringObject obj)) obj.stiffness = stiffness;
-            return this;
+            SpringConfig c = config.Resolved;
+            c.stiffness = stiffness;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.stiffness = stiffness;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
         /// <summary>
@@ -112,8 +184,10 @@ namespace Less3.Springs
         /// </summary>
         public Spring2 SetDamping(float damping)
         {
-            if (Get(nameof(SetDamping), out SpringObject obj)) obj.damping = damping;
-            return this;
+            SpringConfig c = config.Resolved;
+            c.damping = damping;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.damping = damping;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
         /// <summary>
@@ -122,8 +196,16 @@ namespace Less3.Springs
         /// </summary>
         public Spring2 SetFrequency(float frequencyHz, float dampingRatio)
         {
-            if (Get(nameof(SetFrequency), out SpringObject obj)) SpringHandle.SetFrequency(obj, frequencyHz, dampingRatio);
-            return this;
+            SpringHandle.ToFrequency(frequencyHz, dampingRatio, out float stiffness, out float damping);
+            SpringConfig c = config.Resolved;
+            c.stiffness = stiffness;
+            c.damping = damping;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj))
+            {
+                obj.stiffness = stiffness;
+                obj.damping = damping;
+            }
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
         /// <summary>
@@ -132,53 +214,42 @@ namespace Less3.Springs
         /// </summary>
         public Spring2 SetRestThreshold(float threshold)
         {
-            if (Get(nameof(SetRestThreshold), out SpringObject obj)) obj.restThreshold = threshold;
-            return this;
+            SpringConfig c = config.Resolved;
+            c.restThreshold = threshold;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.restThreshold = threshold;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
         public Spring2 SetUpdateType(SpringUpdateType updateType)
         {
-            if (Get(nameof(SetUpdateType), out SpringObject obj)) obj.deltaTimeType = updateType;
-            return this;
+            SpringConfig c = config.Resolved;
+            c.updateType = updateType;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.deltaTimeType = updateType;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
+        /// <summary>Called every frame the spring moves, and once more exactly on the target when it settles.</summary>
         public Spring2 SetOnUpdate(System.Action<Vector2> onUpdate)
         {
-            if (Get(nameof(SetOnUpdate), out SpringObject obj)) obj.onUpdate2 = onUpdate;
-            return this;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.onUpdate2 = onUpdate;
+            return new Spring2(id, version, config, onUpdate, resume);
         }
 
+        /// <summary>Called each time the spring settles on its target, after the final onUpdate.</summary>
         public Spring2 SetOnComplete(System.Action onComplete)
         {
-            if (Get(nameof(SetOnComplete), out SpringObject obj)) obj.onComplete = onComplete;
-            return this;
+            SpringConfig c = config.Resolved;
+            c.onComplete = onComplete;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.onComplete = onComplete;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
 
         public Spring2 SetOnCancel(System.Action onCancel)
         {
-            if (Get(nameof(SetOnCancel), out SpringObject obj)) obj.onCancel = onCancel;
-            return this;
-        }
-
-        private bool Get(string operation, out SpringObject obj) => SpringHandle.TryGet(id, version, DIMENSIONS, operation, out obj);
-
-        //* static bits
-
-        /// <summary>
-        /// Start a spring from zero toward the target
-        /// </summary>
-        public static Spring2 Create(Vector2 target)
-        {
-            return Create(Vector2.zero, target);
-        }
-
-        /// <summary>
-        /// Start a spring at <c>from</c> that settles on <c>target</c>
-        /// </summary>
-        public static Spring2 Create(Vector2 from, Vector2 target)
-        {
-            SpringObject obj = SpringManager.Instance.Allocate(from, target, DIMENSIONS);
-            return obj == null ? default : new Spring2(obj.id, obj.version);
+            SpringConfig c = config.Resolved;
+            c.onCancel = onCancel;
+            if (SpringHandle.TryGet(id, version, DIMENSIONS, out SpringObject obj)) obj.onCancel = onCancel;
+            return new Spring2(id, version, c, onUpdate, resume);
         }
     }
 }

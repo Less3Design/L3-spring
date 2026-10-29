@@ -141,8 +141,45 @@ namespace Less3.Springs
     }
 
     /// <summary>
-    /// The lookup every handle struct goes through. Resolves (id, version) to a live object of the expected
-    /// dimension and logs a warning when the handle is dead, so the setters on each handle stay one liners.
+    /// The tuning and lifecycle callbacks a handle carries with it. A handle keeps this after its spring settles or is
+    /// cancelled, so the next SetTarget can allocate a fresh spring that behaves exactly like the last one.
+    /// A default(SpringConfig) stands for "the defaults"; <see cref="Resolved"/> turns it into real values.
+    /// </summary>
+    internal struct SpringConfig
+    {
+        public bool initialized;
+        public float stiffness;
+        public float damping;
+        public float restThreshold;
+        public SpringUpdateType updateType;
+        public Action onComplete;
+        public Action onCancel;
+
+        public static SpringConfig Default => new SpringConfig
+        {
+            initialized = true,
+            stiffness = SpringObject.DEFAULT_STIFFNESS,
+            damping = SpringObject.DEFAULT_DAMPING,
+            restThreshold = SpringObject.DEFAULT_REST_THRESHOLD,
+            updateType = SpringUpdateType.DeltaTime,
+        };
+
+        public SpringConfig Resolved => initialized ? this : Default;
+
+        public void ApplyTo(SpringObject obj)
+        {
+            obj.stiffness = stiffness;
+            obj.damping = damping;
+            obj.restThreshold = restThreshold;
+            obj.deltaTimeType = updateType;
+            obj.onComplete = onComplete;
+            obj.onCancel = onCancel;
+        }
+    }
+
+    /// <summary>
+    /// Shared plumbing for the four handle structs: resolving a handle to its live object, allocating from a config,
+    /// and the frequency conversion.
     /// </summary>
     internal static class SpringHandle
     {
@@ -156,18 +193,26 @@ namespace Less3.Springs
             return false;
         }
 
-        public static bool TryGet(ushort id, ushort version, byte dimensions, string operation, out SpringObject obj)
+        /// <summary>
+        /// Take a pool slot and apply the config. Returns null (after logging) when there is no manager or the pool is full.
+        /// </summary>
+        public static SpringObject Allocate(Vector4 from, Vector4 target, byte dimensions, in SpringConfig config)
         {
-            if (TryGet(id, version, dimensions, out obj)) return true;
-            Debug.LogWarning($"Spring{(dimensions > 1 ? dimensions.ToString() : "")}: {operation} failed to find SpringObject for id {id} version {version}");
-            return false;
+            if (SpringManager.Instance == null)
+            {
+                Debug.LogError("Spring: no SpringManager. Springs can only run in play mode (or with a manager installed by a test).");
+                return null;
+            }
+            SpringObject obj = SpringManager.Instance.Allocate(from, target, dimensions);
+            if (obj != null) config.Resolved.ApplyTo(obj);
+            return obj;
         }
 
-        public static void SetFrequency(SpringObject obj, float frequencyHz, float dampingRatio)
+        public static void ToFrequency(float frequencyHz, float dampingRatio, out float stiffness, out float damping)
         {
             float omega = 2f * Mathf.PI * frequencyHz;
-            obj.stiffness = omega * omega;
-            obj.damping = 2f * dampingRatio * omega;
+            stiffness = omega * omega;
+            damping = 2f * dampingRatio * omega;
         }
     }
 }
