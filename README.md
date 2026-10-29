@@ -1,6 +1,6 @@
 <img width="4096" height="819" alt="springCard" src="https://github.com/user-attachments/assets/42c6b25e-199e-44a9-aabd-657a45504933" />
 
-A bare bones spring animation system for Unity. Sibling of [L3 Tween](https://github.com/Less3Design/L3-tween).
+Sibling of [L3 Tween](https://github.com/Less3Design/L3-tween).
 
 ## Install
 Add as a [git package](https://docs.unity3d.com/6000.3/Documentation/Manual/upm-ui-giturl.html):
